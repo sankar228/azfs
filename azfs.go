@@ -84,38 +84,42 @@ func main() {
 }
 
 func GetAccountInfo() (string, string, string, string) {
-	accountKey := "R3lBnSAuXNXc4wtXYUuVgfqo+hB9kbWIM8wwo9aq25XNrWNRj78QlnY6q8+YYZMYUZt6zlYjBj+8hvfnOhZ1vQ=="
-	azrBlobAccountName := "qtmdlnedwu2sa0"
+	accountKey := os.Getenv("AZ_STORAGE_ACCOUNT_KEY")
+	azrBlobAccountName := os.Getenv("AZ_STORAGE_ACCOUNT_NAME")
+	azrBlobContainer := os.Getenv("AZ_STORAGE_CONTAINER")
 	azrPrimaryBlobServiceEndpoint := fmt.Sprintf("https://%s.blob.core.windows.net/", azrBlobAccountName)
-	azrBlobContainer := "root"
 
 	return accountKey, azrBlobAccountName, azrPrimaryBlobServiceEndpoint, azrBlobContainer
 }
 
 func ListContainer(dir string) error {
-	accountKey, accountName, endPoint, container := GetAccountInfo()
+	dir = strings.TrimSuffix(dir, "/")
 
-	creden, ec := azblob.NewSharedKeyCredential(accountName, accountKey)
-	if ec != nil {
-		log.Error("login failed accountname: " + accountName)
-		return ec
-	}
-
-	u, _ := url.Parse(fmt.Sprint(endPoint, container))
+	u, _ := url.Parse(fmt.Sprint(endPoint))
 	log.Info("endpoint:", u)
 
-	surl := azblob.NewContainerURL(*u, azblob.NewPipeline(creden, azblob.PipelineOptions{}))
-
+	surl := azblob.NewServiceURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
+	curl := surl.NewContainerURL(container)
 	ctx := context.Background()
 
 	log.Info("listing blob: " + dir)
 	for marker := (azblob.Marker{}); marker.NotDone(); {
-		list, _ := surl.ListBlobsFlatSegment(ctx, marker, azblob.ListBlobsSegmentOptions{})
+		list, _ := curl.ListBlobsFlatSegment(ctx, marker, azblob.ListBlobsSegmentOptions{
+			Prefix:     dir,
+			MaxResults: 5000,
+			Details:    azblob.BlobListingDetails{Metadata: true},
+		})
 
 		marker = list.NextMarker
 		for _, item := range list.Segment.BlobItems {
-			if strings.Contains(item.Name, dir) {
-				fmt.Println(item.Properties.CreationTime, " ", item.Name)
+			dirs := strings.Split(item.Name, "/")
+			r_blob := strings.Join(dirs[0:len(dirs)-1], "/")
+			if dir == r_blob {
+				var btype string = "d"
+				if item.Metadata["hdi_isfolder"] != "true" {
+					btype = "f"
+				}
+				fmt.Println(btype, " ", item.Properties.CreationTime, " ", ByteCountDecimal(*item.Properties.ContentLength), " ", item.Name)
 			}
 		}
 	}
@@ -200,4 +204,17 @@ func FileExist(filename string) bool {
 
 func _Usage() {
 	fmt.Println("usage[ " + os.Args[0] + " <contaner> <path> [-c [local dirctory](download), -u <localfile> <bloblocation>(upload) -l (list)]")
+}
+
+func ByteCountDecimal(b int64) string {
+	const unit = 1000
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "kMGTPE"[exp])
 }
