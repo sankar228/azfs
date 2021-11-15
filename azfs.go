@@ -281,8 +281,12 @@ func DeleteBlob(blob string, mutelog bool) {
 
 	var sureDelete string
 
-	fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
-	fmt.Scanln(&sureDelete)
+	if mutelog {
+		sureDelete = "Y"
+	} else {
+		fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
+		fmt.Scanln(&sureDelete)
+	}
 	if strings.EqualFold(sureDelete, "Y") {
 		deleteResp, err := blobUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
 		if err == nil {
