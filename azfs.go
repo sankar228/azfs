@@ -1,6 +1,7 @@
 package main
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"net/url"
@@ -21,7 +22,7 @@ var (
 	accountKey  string
 	accountName string
 	endPoint    string
-	container   string
+	contnr      string
 	credentials *azblob.SharedKeyCredential
 )
 
@@ -79,7 +80,7 @@ func main() {
 		}
 	} else if ops == "-l" || ops == "--list" {
 		blob := os.Args[2]
-		ListContainer(blob)
+		ListContainer(blob, nil)
 	} else if ops == "-md" || ops == "--makedir" {
 		blob := os.Args[2]
 		b_dir := os.Args[3]
@@ -99,7 +100,7 @@ func main() {
 func GetAccountInfo() (string, string, string) {
 	l_accountKey := os.Getenv("AZ_STORAGE_ACCOUNT_KEY")
 	l_accountName := os.Getenv("AZ_STORAGE_ACCOUNT_NAME")
-	container = os.Getenv("AZ_STORAGE_CONTAINER")
+	contnr = os.Getenv("AZ_STORAGE_CONTAINER")
 
 	if l_accountKey == "" {
 		log.Error("AZ_STORAGE_ACCOUNT_KEY environment variable is missing, aborting operation")
@@ -107,7 +108,7 @@ func GetAccountInfo() (string, string, string) {
 	} else if l_accountName == "" {
 		log.Error("AZ_STORAGE_ACCOUNT_NAME environment variable is missing, aborting operation")
 		panic(new(error))
-	} else if container == "" {
+	} else if contnr == "" {
 		log.Error("AZ_STORAGE_CONTAINER environment variable is missing, aborting operation")
 		panic(new(error))
 	}
@@ -116,14 +117,23 @@ func GetAccountInfo() (string, string, string) {
 	return l_accountKey, l_accountName, azrPrimaryBlobServiceEndpoint
 }
 
-func ListContainer(dir string) error {
+func ListDirectory(dir string) (list.List, error) {
+
+	var result *list.List
+	result = list.New()
+
+	err := ListContainer(dir, result)
+
+	return *result, err
+}
+func ListContainer(dir string, returnResult *list.List) error {
 	dir = strings.TrimSuffix(dir, "/")
 
 	u, _ := url.Parse(fmt.Sprint(endPoint))
 	log.Info("endpoint: ", u)
 
 	surl := azblob.NewServiceURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
-	curl := surl.NewContainerURL(container)
+	curl := surl.NewContainerURL(contnr)
 	ctx := context.Background()
 
 	log.Info("listing blob: " + dir)
@@ -137,9 +147,10 @@ func ListContainer(dir string) error {
 		})
 
 		marker = list.NextMarker
+
 		if len(list.Segment.BlobPrefixes) != 0 {
 			for _, item := range list.Segment.BlobPrefixes {
-				fmt.Println(item.Name)
+				fmt.Println("D	", item.Name)
 			}
 		} else {
 			for marker := (azblob.Marker{}); marker.NotDone(); {
@@ -151,10 +162,16 @@ func ListContainer(dir string) error {
 				})
 
 				marker = list.NextMarker
+
 				if len(list.Segment.BlobItems) != 0 {
 					for _, b := range list.Segment.BlobItems {
-						dirs := strings.Split(b.Name, "/")
-						r_blob := strings.Join(dirs[0:len(dirs)-1], "/")
+						file := strings.Split(b.Name, "/")
+						r_blob := strings.Join(file[0:len(file)-1], "/")
+
+						if returnResult != nil {
+							returnResult.PushBack(b.Name)
+						}
+
 						if dir == r_blob {
 							var btype string = "D"
 							if b.Metadata["hdi_isfolder"] != "true" {
@@ -165,7 +182,7 @@ func ListContainer(dir string) error {
 						}
 					}
 				} else {
-					log.Error("dir or file not found:", dir)
+					log.Error("empty blob: ", dir)
 				}
 			}
 		}
@@ -192,7 +209,7 @@ func DowloadBlob(fileName string, outpath string) error {
 
 	o_file, _ := os.Create(of)
 
-	u, _ := url.Parse(fmt.Sprint(endPoint, container, "/", fileName))
+	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, "/", fileName))
 	log.Info("endpoint: ", u)
 
 	surl := azblob.NewBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
@@ -218,7 +235,7 @@ func UploadFile(localFile string, remotePath string, mutelog bool) error {
 		panic(new(error))
 	}
 	file := filepath.Base(localFile)
-	u, _ := url.Parse(fmt.Sprint(endPoint, container, "/", remotePath, "/", file))
+	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, "/", remotePath, "/", file))
 	blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
 
 	if !mutelog {
@@ -267,9 +284,9 @@ func DeleteBlob(blob string, mutelog bool) {
 	var blobPath string
 
 	if strings.HasPrefix(blob, "/") {
-		blobPath = container + blob
+		blobPath = contnr + blob
 	} else {
-		blobPath = container + "/" + blob
+		blobPath = contnr + "/" + blob
 	}
 	u, _ := url.Parse(fmt.Sprint(endPoint, blobPath))
 	blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
@@ -279,16 +296,48 @@ func DeleteBlob(blob string, mutelog bool) {
 	}
 	ctx := context.Background()
 
+	entries, err := ListDirectory(blob)
+	if err != nil {
+		panic(err)
+	}
 	var sureDelete string
 
 	if mutelog {
 		sureDelete = "Y"
 	} else {
-		fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
+		if entries.Len() > 1 {
+			fmt.Println("directory has ", entries.Len(), " files still want delete directory: "+blobPath+" Y/N ?")
+		} else {
+			fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
+		}
 		fmt.Scanln(&sureDelete)
 	}
 	if strings.EqualFold(sureDelete, "Y") {
+		if entries.Len() > 1 {
+			DeleteMultiBlob(contnr, &entries, false)
+		}
 		deleteResp, err := blobUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
+		if err == nil {
+			if !mutelog {
+				log.Info("Blob deleted, response: {}, {}"+deleteResp.ErrorCode(), deleteResp.Status())
+			}
+		} else {
+			fmt.Println("error deleting the blob entry: ", err)
+		}
+
+	}
+}
+
+func DeleteMultiBlob(container string, entries *list.List, mutelog bool) {
+	ctx := context.Background()
+
+	for file := entries.Front(); file != nil; file = file.Next() {
+		blobFile := container + "/" + file.Value.(string)
+		fmt.Println("deleting file: ", blobFile)
+		u, _ := url.Parse(fmt.Sprint(endPoint, blobFile))
+		blobFileUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
+
+		deleteResp, err := blobFileUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
 		if err == nil {
 			if !mutelog {
 				log.Info("Blob deleted, response: {}, {}"+deleteResp.ErrorCode(), deleteResp.Status())
