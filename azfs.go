@@ -11,7 +11,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/Azure/azure-storage-blob-go/azblob"
 
@@ -119,8 +118,7 @@ func GetAccountInfo() (string, string, string) {
 
 func ListDirectory(dir string) (list.List, error) {
 
-	var result *list.List
-	result = list.New()
+	result := list.New()
 
 	err := ListContainer(dir, result)
 
@@ -128,7 +126,10 @@ func ListDirectory(dir string) (list.List, error) {
 }
 func ListContainer(dir string, returnResult *list.List) error {
 	dir = strings.TrimSuffix(dir, "/")
-
+	fileRe := "*"
+	if strings.HasSuffix(dir, "*") {
+		dir, fileRe = filepath.Split(dir)
+	}
 	u, _ := url.Parse(fmt.Sprint(endPoint))
 	log.Info("endpoint: ", u)
 
@@ -136,8 +137,8 @@ func ListContainer(dir string, returnResult *list.List) error {
 	curl := surl.NewContainerURL(contnr)
 	ctx := context.Background()
 
-	log.Info("listing blob: " + dir)
 	preFix := dir + "/"
+	log.Info("listing blob: " + dir + " , prefix: " + preFix)
 	for marker := (azblob.Marker{}); marker.NotDone(); {
 		list, _ := curl.ListBlobsHierarchySegment(ctx, marker, "/", azblob.ListBlobsSegmentOptions{
 			Prefix: preFix,
@@ -152,7 +153,18 @@ func ListContainer(dir string, returnResult *list.List) error {
 			for _, item := range list.Segment.BlobPrefixes {
 				fmt.Println("D	", item.Name)
 			}
-		} else {
+		}
+		if len(list.Segment.BlobItems) != 0 {
+			for _, item := range list.Segment.BlobItems {
+				_, f := path.Split(item.Name)
+				if matches, _ := filepath.Match(fileRe, f); matches {
+					fmt.Println("F	", ByteCountDecimal(*item.Properties.ContentLength), " ", item.Name)
+				}
+			}
+		}
+	}
+
+	/*
 			for marker := (azblob.Marker{}); marker.NotDone(); {
 				list, _ := curl.ListBlobsFlatSegment(ctx, marker, azblob.ListBlobsSegmentOptions{
 					Prefix: preFix,
@@ -161,7 +173,7 @@ func ListContainer(dir string, returnResult *list.List) error {
 					},
 				})
 
-				marker = list.NextMarker
+		 		marker = list.NextMarker
 
 				if len(list.Segment.BlobItems) != 0 {
 					for _, b := range list.Segment.BlobItems {
@@ -184,9 +196,7 @@ func ListContainer(dir string, returnResult *list.List) error {
 				} else {
 					log.Error("empty blob: ", dir)
 				}
-			}
-		}
-	}
+			}*/
 
 	return nil
 }
