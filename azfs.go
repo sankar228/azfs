@@ -125,7 +125,7 @@ func ListDirectory(dir string) (list.List, error) {
 	return *result, err
 }
 func ListContainer(dir string, returnResult *list.List) error {
-	dir = strings.TrimSuffix(dir, "/")
+	dir = strings.TrimSuffix(dir, string(filepath.Separator))
 	fileRe := "*"
 	if strings.HasSuffix(dir, "*") {
 		dir, fileRe = filepath.Split(dir)
@@ -137,10 +137,10 @@ func ListContainer(dir string, returnResult *list.List) error {
 	curl := surl.NewContainerURL(contnr)
 	ctx := context.Background()
 
-	preFix := dir + "/"
+	preFix := dir + string(filepath.Separator)
 	log.Info("listing blob: " + dir + " , prefix: " + preFix)
 	for marker := (azblob.Marker{}); marker.NotDone(); {
-		list, _ := curl.ListBlobsHierarchySegment(ctx, marker, "/", azblob.ListBlobsSegmentOptions{
+		list, _ := curl.ListBlobsHierarchySegment(ctx, marker, string(filepath.Separator), azblob.ListBlobsSegmentOptions{
 			Prefix: preFix,
 			Details: azblob.BlobListingDetails{
 				Metadata: true,
@@ -163,41 +163,6 @@ func ListContainer(dir string, returnResult *list.List) error {
 			}
 		}
 	}
-
-	/*
-			for marker := (azblob.Marker{}); marker.NotDone(); {
-				list, _ := curl.ListBlobsFlatSegment(ctx, marker, azblob.ListBlobsSegmentOptions{
-					Prefix: preFix,
-					Details: azblob.BlobListingDetails{
-						Metadata: true,
-					},
-				})
-
-		 		marker = list.NextMarker
-
-				if len(list.Segment.BlobItems) != 0 {
-					for _, b := range list.Segment.BlobItems {
-						file := strings.Split(b.Name, "/")
-						r_blob := strings.Join(file[0:len(file)-1], "/")
-
-						if returnResult != nil {
-							returnResult.PushBack(b.Name)
-						}
-
-						if dir == r_blob {
-							var btype string = "D"
-							if b.Metadata["hdi_isfolder"] != "true" {
-								btype = "F"
-							}
-							fmt.Println(btype, " ", b.Properties.LastModified.Format(time.RFC1123), " ", ByteCountDecimal(*b.Properties.ContentLength), " ", b.Name)
-
-						}
-					}
-				} else {
-					log.Error("empty blob: ", dir)
-				}
-			}*/
-
 	return nil
 }
 
@@ -208,9 +173,10 @@ func DowloadBlob(fileName string, outpath string) error {
 
 	fmt.Println("working dir: " + cwd)
 	if outpath == "" {
-		of = fmt.Sprint(cwd, filepath.Base(fileName))
+		of = fmt.Sprint(cwd, string(filepath.Separator), filepath.Base(fileName))
 	} else {
-		of = fmt.Sprint(outpath, "/", filepath.Base(fileName))
+		outpath = strings.TrimSuffix(outpath, string(filepath.Separator))
+		of = fmt.Sprint(outpath, string(filepath.Separator), filepath.Base(fileName))
 	}
 
 	if FileExist(of) {
@@ -219,7 +185,7 @@ func DowloadBlob(fileName string, outpath string) error {
 
 	o_file, _ := os.Create(of)
 
-	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, "/", fileName))
+	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, string(filepath.Separator), fileName))
 	log.Info("endpoint: ", u)
 
 	surl := azblob.NewBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
@@ -245,7 +211,7 @@ func UploadFile(localFile string, remotePath string, mutelog bool) error {
 		panic(new(error))
 	}
 	file := filepath.Base(localFile)
-	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, "/", remotePath, "/", file))
+	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, string(filepath.Separator), remotePath, string(filepath.Separator), file))
 	blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
 
 	if !mutelog {
@@ -276,10 +242,10 @@ func UploadFile(localFile string, remotePath string, mutelog bool) error {
 
 func CreateDir(blob string, directory string) error {
 	tempLocalFile, err := os.CreateTemp("./", ".temp_temp")
-	dir := blob + "/" + directory
+	dir := blob + string(filepath.Separator) + directory
 	if err == nil {
 		UploadFile(tempLocalFile.Name(), dir, true)
-		DeleteBlob(dir+"/"+tempLocalFile.Name(), true)
+		DeleteBlob(dir+string(filepath.Separator)+tempLocalFile.Name(), true)
 		os.Remove(tempLocalFile.Name())
 	} else {
 		return err
@@ -293,10 +259,10 @@ func CreateDir(blob string, directory string) error {
 func DeleteBlob(blob string, mutelog bool) {
 	var blobPath string
 
-	if strings.HasPrefix(blob, "/") {
+	if strings.HasPrefix(blob, string(filepath.Separator)) {
 		blobPath = contnr + blob
 	} else {
-		blobPath = contnr + "/" + blob
+		blobPath = contnr + string(filepath.Separator) + blob
 	}
 	u, _ := url.Parse(fmt.Sprint(endPoint, blobPath))
 	blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
@@ -342,7 +308,7 @@ func DeleteMultiBlob(container string, entries *list.List, mutelog bool) {
 	ctx := context.Background()
 
 	for file := entries.Front(); file != nil; file = file.Next() {
-		blobFile := container + "/" + file.Value.(string)
+		blobFile := container + string(filepath.Separator) + file.Value.(string)
 		fmt.Println("deleting file: ", blobFile)
 		u, _ := url.Parse(fmt.Sprint(endPoint, blobFile))
 		blobFileUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
