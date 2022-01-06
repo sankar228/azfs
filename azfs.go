@@ -1,7 +1,6 @@
 package main
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"net/url"
@@ -79,7 +78,7 @@ func main() {
 		}
 	} else if ops == "-l" || ops == "--list" {
 		blob := os.Args[2]
-		ListContainer(blob, nil)
+		ListContainer(blob, &[]string{})
 	} else if ops == "-md" || ops == "--makedir" {
 		blob := os.Args[2]
 		b_dir := os.Args[3]
@@ -116,20 +115,25 @@ func GetAccountInfo() (string, string, string) {
 	return l_accountKey, l_accountName, azrPrimaryBlobServiceEndpoint
 }
 
-func ListDirectory(dir string) (list.List, error) {
+func ListDirectory(dir string) ([]string, error) {
 
-	result := list.New()
+	result := []string{}
 
-	err := ListContainer(dir, result)
+	err := ListContainer(dir, &result)
 
-	return *result, err
+	return result, err
 }
-func ListContainer(dir string, returnResult *list.List) error {
+func ListContainer(dir string, returnResult *[]string) error {
 	dir = strings.TrimSuffix(dir, string(filepath.Separator))
-	fileRe := "*"
-	if strings.HasSuffix(dir, "*") {
-		dir, fileRe = filepath.Split(dir)
+	var fileRe string
+
+	dir, fileRe = filepath.Split(dir)
+
+	if !strings.Contains(fileRe, "*") {
+		dir = dir + string(filepath.Separator) + fileRe
+		fileRe = "*"
 	}
+
 	u, _ := url.Parse(fmt.Sprint(endPoint))
 	log.Info("endpoint: ", u)
 
@@ -158,7 +162,8 @@ func ListContainer(dir string, returnResult *list.List) error {
 			for _, item := range list.Segment.BlobItems {
 				_, f := path.Split(item.Name)
 				if matches, _ := filepath.Match(fileRe, f); matches {
-					fmt.Println("F	", ByteCountDecimal(*item.Properties.ContentLength), " ", item.Name)
+					fmt.Println("F	", item.Properties.CreationTime, " ", ByteCountDecimal(*item.Properties.ContentLength), " ", item.Name)
+					*returnResult = append(*returnResult, item.Name)
 				}
 			}
 		}
@@ -281,16 +286,16 @@ func DeleteBlob(blob string, mutelog bool) {
 	if mutelog {
 		sureDelete = "Y"
 	} else {
-		if entries.Len() > 1 {
-			fmt.Println("directory has ", entries.Len(), " files still want delete directory: "+blobPath+" Y/N ?")
+		if len(entries) > 1 {
+			fmt.Println("directory has ", len(entries), " files still want delete directory: "+blobPath+" Y/N ?")
 		} else {
 			fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
 		}
 		fmt.Scanln(&sureDelete)
 	}
 	if strings.EqualFold(sureDelete, "Y") {
-		if entries.Len() > 1 {
-			DeleteMultiBlob(contnr, &entries, false)
+		if len(entries) > 1 {
+			DeleteMultiBlob(contnr, entries, false)
 		}
 		deleteResp, err := blobUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
 		if err == nil {
@@ -304,11 +309,11 @@ func DeleteBlob(blob string, mutelog bool) {
 	}
 }
 
-func DeleteMultiBlob(container string, entries *list.List, mutelog bool) {
+func DeleteMultiBlob(container string, entries []string, mutelog bool) {
 	ctx := context.Background()
 
-	for file := entries.Front(); file != nil; file = file.Next() {
-		blobFile := container + string(filepath.Separator) + file.Value.(string)
+	for _, file := range entries {
+		blobFile := container + string(filepath.Separator) + file
 		fmt.Println("deleting file: ", blobFile)
 		u, _ := url.Parse(fmt.Sprint(endPoint, blobFile))
 		blobFileUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
