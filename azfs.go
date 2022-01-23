@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Azure/azure-storage-blob-go/azblob"
 
@@ -23,6 +24,14 @@ var (
 	contnr      string
 	credentials *azblob.SharedKeyCredential
 )
+
+type Blobs []Blob
+type Blob struct {
+	BlobName  string
+	Type      string
+	Timestamp *time.Time
+	Size      string
+}
 
 func main() {
 
@@ -67,18 +76,23 @@ func main() {
 			log.Error("unable to download file: " + err.Error())
 		}
 	} else if ops == "-u" || ops == "--upload" {
-		if len(os.Args) != 4 {
+		if len(os.Args) <= 4 {
 			_Usage()
 		}
-		localFie := os.Args[2]
-		blobLocation := os.Args[3]
-		err := UploadFile(localFie, blobLocation, false)
+		blobLocation := os.Args[2]
+		localFie := []string{}
+		for i := 3; i < len(os.Args); i++ {
+			localFie = append(localFie, os.Args[i])
+		}
+
+		err := UploadFile(false, blobLocation, localFie[:]...)
 		if err != nil {
 			log.Error("unable to download file: " + err.Error())
 		}
 	} else if ops == "-l" || ops == "--list" {
 		blob := os.Args[2]
-		ListContainer(blob, &[]string{})
+		blobs := Blobs{}
+		blobs.ListContainer(blob)
 	} else if ops == "-md" || ops == "--makedir" {
 		blob := os.Args[2]
 		b_dir := os.Args[3]
@@ -115,17 +129,16 @@ func GetAccountInfo() (string, string, string) {
 	return l_accountKey, l_accountName, azrPrimaryBlobServiceEndpoint
 }
 
-func ListDirectory(dir string) ([]string, error) {
+func (blobs *Blobs) ListDirectory(dir string) error {
 
-	result := []string{}
-
-	err := ListContainer(dir, &result)
-
-	return result, err
+	err := blobs.ListContainer(dir)
+	return err
 }
-func ListContainer(dir string, returnResult *[]string) error {
-	dir = strings.TrimSuffix(dir, string(filepath.Separator))
+func (blobs *Blobs) ListContainer(dir string) error {
 	var fileRe string
+	var noblob bool = true
+	dir = strings.TrimSuffix(dir, string(filepath.Separator))
+	ctx := context.Background()
 
 	dir, fileRe = filepath.Split(dir)
 
@@ -139,7 +152,6 @@ func ListContainer(dir string, returnResult *[]string) error {
 
 	surl := azblob.NewServiceURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
 	curl := surl.NewContainerURL(contnr)
-	ctx := context.Background()
 
 	preFix := dir + string(filepath.Separator)
 	log.Info("listing blob: " + dir + " , prefix: " + preFix)
@@ -154,18 +166,33 @@ func ListContainer(dir string, returnResult *[]string) error {
 		marker = list.NextMarker
 
 		if len(list.Segment.BlobPrefixes) != 0 {
+			noblob = false
 			for _, item := range list.Segment.BlobPrefixes {
 				fmt.Println("D	", item.Name)
+
+				*blobs = append(*blobs, Blob{
+					BlobName: strings.TrimSuffix(item.Name, string(filepath.Separator)),
+					Type:     "D",
+				})
 			}
 		}
 		if len(list.Segment.BlobItems) != 0 {
+			noblob = false
 			for _, item := range list.Segment.BlobItems {
 				_, f := path.Split(item.Name)
 				if matches, _ := filepath.Match(fileRe, f); matches {
 					fmt.Println("F	", item.Properties.CreationTime, " ", ByteCountDecimal(*item.Properties.ContentLength), " ", item.Name)
-					*returnResult = append(*returnResult, item.Name)
+					*blobs = append(*blobs, Blob{
+						BlobName:  strings.TrimSuffix(item.Name, string(filepath.Separator)),
+						Type:      "F",
+						Timestamp: item.Properties.CreationTime,
+						Size:      ByteCountDecimal(*item.Properties.ContentLength),
+					})
 				}
 			}
+		}
+		if noblob {
+			fmt.Println("BLOB NOT FOUND: ", dir)
 		}
 	}
 	return nil
@@ -175,6 +202,7 @@ func DowloadBlob(fileName string, outpath string) error {
 
 	var of string
 	cwd, _ := os.Getwd()
+	ctx := context.Background()
 
 	fmt.Println("working dir: " + cwd)
 	if outpath == "" {
@@ -195,8 +223,6 @@ func DowloadBlob(fileName string, outpath string) error {
 
 	surl := azblob.NewBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
 
-	ctx := context.Background()
-
 	err := azblob.DownloadBlobToFile(ctx, surl, 0, azblob.CountToEnd, o_file, azblob.DownloadFromBlobOptions{})
 
 	if err != nil {
@@ -209,39 +235,40 @@ func DowloadBlob(fileName string, outpath string) error {
 	return nil
 }
 
-func UploadFile(localFile string, remotePath string, mutelog bool) error {
+func UploadFile(mutelog bool, remotePath string, localFiles ...string) error {
 
-	if !FileExist(localFile) {
-		log.Error(localFile + " does not exist")
-		panic(new(error))
+	for _, localFile := range localFiles {
+		if !FileExist(localFile) {
+			log.Error(localFile + " does not exist")
+			panic(new(error))
+		}
+		file := filepath.Base(localFile)
+		u, _ := url.Parse(fmt.Sprint(endPoint, contnr, string(filepath.Separator), remotePath, string(filepath.Separator), file))
+		blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
+
+		if !mutelog {
+			log.Info("endpoint:", u)
+		}
+		ctx := context.Background()
+
+		l_file, ferr := os.Open(localFile)
+		if ferr != nil {
+			log.Error("unable to read local file: ", localFile)
+			panic(ferr)
+		}
+		_, uerr := azblob.UploadFileToBlockBlob(ctx, l_file, blobUrl, azblob.UploadToBlockBlobOptions{
+			BlockSize:   4 * 1024 * 1024,
+			Parallelism: 16})
+
+		if uerr != nil {
+			log.Error("file upload to azure blob failed", uerr)
+			panic(uerr)
+		}
+
+		if !mutelog {
+			log.Info("file upload completed: " + u.Path)
+		}
 	}
-	file := filepath.Base(localFile)
-	u, _ := url.Parse(fmt.Sprint(endPoint, contnr, string(filepath.Separator), remotePath, string(filepath.Separator), file))
-	blobUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
-
-	if !mutelog {
-		log.Info("endpoint:", u)
-	}
-	ctx := context.Background()
-
-	l_file, ferr := os.Open(localFile)
-	if ferr != nil {
-		log.Error("unable to read local file: ", localFile)
-		panic(ferr)
-	}
-	_, uerr := azblob.UploadFileToBlockBlob(ctx, l_file, blobUrl, azblob.UploadToBlockBlobOptions{
-		BlockSize:   4 * 1024 * 1024,
-		Parallelism: 16})
-
-	if uerr != nil {
-		log.Error("file upload to azure blob failed", uerr)
-		panic(uerr)
-	}
-
-	if !mutelog {
-		log.Info("file upload completed: " + u.Path)
-	}
-
 	return nil
 }
 
@@ -249,7 +276,7 @@ func CreateDir(blob string, directory string) error {
 	tempLocalFile, err := os.CreateTemp("./", ".temp_temp")
 	dir := blob + string(filepath.Separator) + directory
 	if err == nil {
-		UploadFile(tempLocalFile.Name(), dir, true)
+		UploadFile(true, dir, tempLocalFile.Name())
 		DeleteBlob(dir+string(filepath.Separator)+tempLocalFile.Name(), true)
 		os.Remove(tempLocalFile.Name())
 	} else {
@@ -264,6 +291,7 @@ func CreateDir(blob string, directory string) error {
 func DeleteBlob(blob string, mutelog bool) {
 	var blobPath string
 
+	blob = strings.TrimSuffix(blob, string(filepath.Separator))
 	if strings.HasPrefix(blob, string(filepath.Separator)) {
 		blobPath = contnr + blob
 	} else {
@@ -277,7 +305,8 @@ func DeleteBlob(blob string, mutelog bool) {
 	}
 	ctx := context.Background()
 
-	entries, err := ListDirectory(blob)
+	blobs := Blobs{}
+	err := blobs.ListDirectory(blob)
 	if err != nil {
 		panic(err)
 	}
@@ -286,16 +315,16 @@ func DeleteBlob(blob string, mutelog bool) {
 	if mutelog {
 		sureDelete = "Y"
 	} else {
-		if len(entries) > 1 {
-			fmt.Println("directory has ", len(entries), " files still want delete directory: "+blobPath+" Y/N ?")
+		if len(blobs) >= 1 {
+			fmt.Println("directory has ", len(blobs), " files still want delete directory: "+blobPath+" Y/N ?")
 		} else {
 			fmt.Println("delete blob entry: " + blobPath + " Y/N ?")
 		}
 		fmt.Scanln(&sureDelete)
 	}
 	if strings.EqualFold(sureDelete, "Y") {
-		if len(entries) > 1 {
-			DeleteMultiBlob(contnr, entries, false)
+		if len(blobs) >= 1 {
+			DeleteMultiBlob(contnr, blobs, false)
 		}
 		deleteResp, err := blobUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
 		if err == nil {
@@ -309,22 +338,29 @@ func DeleteBlob(blob string, mutelog bool) {
 	}
 }
 
-func DeleteMultiBlob(container string, entries []string, mutelog bool) {
+func DeleteMultiBlob(container string, blobs Blobs, mutelog bool) {
 	ctx := context.Background()
+	fmt.Println("multi blob delete: ", blobs)
 
-	for _, file := range entries {
-		blobFile := container + string(filepath.Separator) + file
-		fmt.Println("deleting file: ", blobFile)
-		u, _ := url.Parse(fmt.Sprint(endPoint, blobFile))
-		blobFileUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
+	for _, blob := range blobs {
+		if blob.Type == "F" {
+			blobFile := container + string(filepath.Separator) + blob.BlobName
+			fmt.Println("deleting file: ", blobFile)
+			u, _ := url.Parse(fmt.Sprint(endPoint, blobFile))
+			blobFileUrl := azblob.NewBlockBlobURL(*u, azblob.NewPipeline(credentials, azblob.PipelineOptions{}))
 
-		deleteResp, err := blobFileUrl.Delete(ctx, azblob.DeleteSnapshotsOptionNone, azblob.BlobAccessConditions{})
-		if err == nil {
-			if !mutelog {
-				log.Info("Blob deleted, response: {}, {}"+deleteResp.ErrorCode(), deleteResp.Status())
+			deleteResp, err := blobFileUrl.Delete(ctx, azblob.DeleteSnapshotsOptionInclude, azblob.BlobAccessConditions{})
+
+			if err == nil {
+				if !mutelog {
+					log.Info("Blob deleted, response: {}, {}"+deleteResp.ErrorCode(), deleteResp.Status())
+				}
+			} else {
+				fmt.Println("error deleting the blob entry: ", err)
 			}
 		} else {
-			fmt.Println("error deleting the blob entry: ", err)
+			fmt.Println("Blob is dir: ", blob.BlobName)
+			DeleteBlob(blob.BlobName, true)
 		}
 	}
 }
@@ -342,7 +378,7 @@ func _Usage() {
 	fmt.Println("usage[ " + os.Args[0] + "  <options> \n" +
 		"-h | --help : Help !! \n" +
 		"-c | --copy : Copy/Dowload file from the blob storage eg: -c <blob path> [local dirctory] default to current dir \n" +
-		"-u | --upload : Upload a file to blob storage eg: -u <localfile> <bloblocation> \n" +
+		"-u | --upload : Upload a file to blob storage eg: -u <bloblocation> <localfile1> <localfile2> ...\n" +
 		"-l | --list : List directories or files a given blob/container eg: -l <blob path> \n" +
 		"-d | --delete : Delete a file/blob from the blob storage -d <blob path> \n" +
 		"-md | --makedir : Create folder/dir in a given blob path eg: -md <blob path> <dir Name>\n")
